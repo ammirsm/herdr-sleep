@@ -48,6 +48,12 @@ herdr-sleep does that for you, and makes the wake-up a single Enter in the tab.
 
 ## Install
 
+Homebrew (macOS):
+
+```sh
+brew install ammirsm/tap/herdr-sleep
+```
+
 Binary from a release:
 
 ```sh
