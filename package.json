@@ -1,0 +1,14 @@
+{
+  "name": "herdr-sleep",
+  "private": true,
+  "type": "module",
+  "bin": { "herdr-sleep": "src/main.ts" },
+  "scripts": {
+    "list": "bun run src/main.ts list",
+    "sleep": "bun run src/main.ts sleep",
+    "wake": "bun run src/main.ts wake",
+    "auto": "bun run src/main.ts auto",
+    "install-timer": "bun run src/main.ts install",
+    "uninstall-timer": "bun run src/main.ts uninstall"
+  }
+}
