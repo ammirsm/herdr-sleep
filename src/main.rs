@@ -386,6 +386,41 @@ fn wait_for_agent(session: &str, pane: &str, secs: u64) -> bool {
     pane_has_agent(session, pane)
 }
 
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                for d in chars.by_ref() {
+                    if d.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Text sitting in the chat's input box, from the visible screen. Claude Code
+/// draws the box as a line starting with "❯". Anything after it is unsent.
+fn unsent_text(screen: &str) -> Option<String> {
+    let clean = strip_ansi(screen);
+    let line = clean.lines().rev().find(|l| l.trim_start().starts_with('❯'))?;
+    let rest = line.trim_start().trim_start_matches('❯').trim();
+    if rest.is_empty() { None } else { Some(rest.to_string()) }
+}
+
+fn pane_unsent_text(session: &str, pane: &str) -> Option<String> {
+    let v = hs(session, &["pane", "read", pane, "--source", "visible", "--lines", "80", "--raw"]).ok()?;
+    let screen = v.as_str().map(String::from).unwrap_or_else(|| v.to_string());
+    unsent_text(&screen)
+}
+
 /// Keep the flags a chat was launched with, drop the ones that pick a conversation
 /// and any positional prompt. These are reused on wake, after `--resume <id>`.
 fn launch_flags(argv: &[String]) -> Vec<String> {
@@ -533,6 +568,12 @@ fn sleep_one(a: &Agent, dry: bool) -> bool {
     if dry {
         log(&format!("[dry] sleep {k} tab={} sid={} idle={} rss={}MB", a.tab, &a.sid[..8], fmt_h(a.idle), a.rss_mb));
         return true;
+    }
+    // /exit typed after unsent text would send that text as a message. Never do that.
+    if let Some(t) = pane_unsent_text(&a.session, &a.pane) {
+        let t: String = t.chars().take(40).collect();
+        log(&format!("skip {k}: unsent text in the prompt box: {t:?}"));
+        return false;
     }
     let _ = hs(&a.session, &["pane", "send-text", &a.pane, "/exit"]);
     sleep(Duration::from_millis(400));
@@ -767,6 +808,9 @@ fn cmd_install(hours: f64, every: &str, dry: bool) {
     fs::write(&plist, xml).expect("write plist");
     let _ = Command::new("launchctl").args(["unload", plist.to_str().unwrap()]).output();
     let r = Command::new("launchctl").args(["load", plist.to_str().unwrap()]).output().expect("launchctl");
+    // RunAtLoad is not honoured by a plain load on current macOS. Start the first pass now.
+    let uid = String::from_utf8_lossy(&Command::new("id").arg("-u").output().expect("id").stdout).trim().to_string();
+    let _ = Command::new("launchctl").args(["kickstart", &format!("gui/{uid}/{LAUNCHD_LABEL}")]).output();
     println!(
         "installed {}: auto-sleep idle >= {hours}h every {every}. launchctl: {}",
         plist.display(),
@@ -842,6 +886,15 @@ mod tests {
         .unwrap();
         assert_eq!(last_message_secs(&f), parse_iso("2026-09-02T00:00:00Z"));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unsent_text_from_screen() {
+        let empty = "some output\n\x1b[38;2;1;2;3m❯\x1b[0m \n────\n  bypass permissions on";
+        assert_eq!(unsent_text(empty), None);
+        let typed = "some output\n❯ can we \n────\n";
+        assert_eq!(unsent_text(typed).as_deref(), Some("can we"));
+        assert_eq!(unsent_text("no prompt here"), None);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 [package]
 name = "herdr-sleep"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Free RAM from idle Claude Code chats in herdr panes without losing them. Sleep, park, wake by Enter."
 license = "MIT"
