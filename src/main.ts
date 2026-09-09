@@ -178,8 +178,11 @@ async function arm(session: string, pane: string, tab: string, sid: string, cwd:
   ].join("; ");
   await herdr(session, ["pane", "send-text", pane, cmd]);
   await herdr(session, ["pane", "send-keys", pane, "Enter"]);
-  await Bun.sleep(500);
-  return isParked(session, pane);
+  for (let i = 0; i < 6; i++) {
+    await Bun.sleep(500);
+    if (await isParked(session, pane)) return true;
+  }
+  return false;
 }
 
 async function waitForAgent(session: string, pane: string, seconds: number): Promise<boolean> {
