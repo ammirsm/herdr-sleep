@@ -13,7 +13,7 @@ jobs:
             os: macos-latest
             name: arm64-apple-darwin
           - target: x86_64-apple-darwin
-            os: macos-13
+            os: macos-latest
             name: x86_64-apple-darwin
     runs-on: ${{ matrix.os }}
     steps:
