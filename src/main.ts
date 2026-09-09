@@ -156,6 +156,27 @@ async function paneHasAgent(session: string, pane: string): Promise<boolean> {
   return (list.agents ?? []).some((a: any) => a.pane_id === pane);
 }
 
+/** Leave the pane shell waiting: a visible note, Enter resumes the chat in place. */
+async function arm(session: string, pane: string, tab: string, sid: string, cwd: string) {
+  const q = (x: string) => "'" + x.replace(/'/g, "'\\''") + "'";
+  const cmd = [
+    "clear",
+    `printf ${q("\\n\\n   zz  sleeping: %s\\n   press Enter to wake this chat\\n\\n")} ${q(tab)}`,
+    "read -r",
+    `cd ${q(cwd)} && claude --resume ${sid} --dangerously-skip-permissions`,
+  ].join("; ");
+  await herdr(session, ["pane", "send-text", pane, cmd]);
+  await herdr(session, ["pane", "send-keys", pane, "Enter"]);
+}
+
+async function waitForAgent(session: string, pane: string, seconds: number): Promise<boolean> {
+  for (let i = 0; i < seconds * 2; i++) {
+    if (await paneHasAgent(session, pane)) return true;
+    await Bun.sleep(500);
+  }
+  return paneHasAgent(session, pane);
+}
+
 async function sleepOne(a: Agent, dry: boolean): Promise<boolean> {
   if (!a.sid) { log(`skip ${key(a.session, a.pane)}: no session id`); return false; }
   if (a.status !== "idle" && a.status !== "done") { log(`skip ${key(a.session, a.pane)}: status=${a.status}`); return false; }
@@ -172,6 +193,8 @@ async function sleepOne(a: Agent, dry: boolean): Promise<boolean> {
     log(`FAILED sleep ${key(a.session, a.pane)}: agent still present after /exit`);
     return false;
   }
+  await Bun.sleep(300);
+  await arm(a.session, a.pane, a.tab, a.sid, a.cwd);
   const st = loadState();
   st[key(a.session, a.pane)] = {
     session: a.session, pane: a.pane, tab: a.tab, name: a.name || a.tab, sid: a.sid, cwd: a.cwd,
@@ -192,10 +215,22 @@ async function wakeOne(k: string, dry: boolean): Promise<boolean> {
     delete st[k]; saveState(st);
     return false;
   }
-  // Put the shell in the chat's original cwd so --resume finds the same project.
+  // The pane is normally parked in "read -r": Enter resumes in place.
+  await herdr(s.session, ["pane", "send-keys", s.pane, "Enter"]);
+  if (await waitForAgent(s.session, s.pane, 20)) {
+    delete st[k]; saveState(st);
+    log(`woke ${k} tab=${s.tab} sid=${s.sid.slice(0, 8)} (Enter)`);
+    return true;
+  }
+  // Fallback: plain shell prompt (user hit Ctrl-C on the wait). Start it ourselves.
+  // If the pane was still parked, this line feeds "read -r" and the chat starts anyway.
   await herdr(s.session, ["pane", "send-text", s.pane, `cd ${JSON.stringify(s.cwd)}`]);
   await herdr(s.session, ["pane", "send-keys", s.pane, "Enter"]);
-  await Bun.sleep(300);
+  if (await waitForAgent(s.session, s.pane, 15)) {
+    delete st[k]; saveState(st);
+    log(`woke ${k} tab=${s.tab} sid=${s.sid.slice(0, 8)} (parked, second Enter)`);
+    return true;
+  }
   const name = (s.name || s.tab || "claude").replace(/[^A-Za-z0-9._-]+/g, "-").slice(0, 40) || "claude";
   await herdr(s.session, [
     "agent", "start", name, "--kind", "claude", "--pane", s.pane, "--timeout", "120000",
@@ -218,9 +253,19 @@ const positional = argv.slice(1).filter((a) => !a.startsWith("--") && a !== opt(
 
 const fmtH = (h: number | null) => h == null ? "?" : h >= 48 ? `${(h / 24).toFixed(1)}d` : `${h.toFixed(1)}h`;
 
+function reconcile(all: Agent[]): Record<string, Sleeping> {
+  const st = loadState();
+  let changed = false;
+  for (const k of Object.keys(st)) {
+    if (all.some((a) => key(a.session, a.pane) === k)) { delete st[k]; changed = true; }
+  }
+  if (changed) saveState(st);
+  return st;
+}
+
 async function cmdList() {
   const all = await agents();
-  const st = loadState();
+  const st = reconcile(all);
   all.sort((a, b) => (b.idleHours ?? -1) - (a.idleHours ?? -1));
   let rss = 0;
   console.log("AWAKE");
@@ -244,8 +289,12 @@ async function cmdSleep() {
     const [session, ...panes] = positional;
     if (!session || !panes.length) { console.error("usage: herdr-sleep sleep <session> <pane>... | --all-idle [--hours N] [--dry-run]"); process.exit(1); }
     targets = all.filter((a) => a.session === session && panes.includes(a.pane));
-    const missing = panes.filter((p) => !targets.some((t) => t.pane === p));
-    if (missing.length) console.error(`no claude agent on: ${missing.join(", ")}`);
+    const st = loadState();
+    for (const p of panes.filter((p) => !targets.some((t) => t.pane === p))) {
+      const sl = st[key(session, p)];
+      if (sl && !dry) { await arm(sl.session, sl.pane, sl.tab, sl.sid, sl.cwd); log(`armed ${key(session, p)} (already asleep)`); }
+      else console.error(`no claude agent on: ${key(session, p)}`);
+    }
   }
   let n = 0, mb = 0;
   for (const a of targets) { if (await sleepOne(a, dry)) { n++; mb += a.rssMb; } }

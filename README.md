@@ -7,7 +7,8 @@ An idle Claude chat is a Node process holding about 340 MB. The chat itself is o
 `claude --resume <id>` brings it back.
 
 - sleep: send `/exit` to the chat. The pane, tab and shell stay. RAM drops to ~0.
-- wake: `herdr agent start ... -- --resume <id>` in the same pane.
+- after sleep the pane shows "zz sleeping: <tab>, press Enter to wake this chat". Enter resumes it in place.
+- wake (from the CLI) presses that Enter for you, or starts the chat with `herdr agent start` if the pane is at a plain prompt.
 
 ## Use
 
