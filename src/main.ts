@@ -158,22 +158,42 @@ async function paneHasAgent(session: string, pane: string): Promise<boolean> {
 
 /** Leave the pane shell waiting: a visible note, Enter resumes the chat in place. */
 const PARK_MARK = "press Enter to wake this chat";
+// The park waits in "head -n1", an external process, so the pane process list
+// tells us the state. Screen text is stale after a chat exits its alt screen.
+const PARK_PROC = "head -n1";
 
-async function isParked(session: string, pane: string): Promise<boolean> {
+async function fgProcs(session: string, pane: string): Promise<string[]> {
   try {
-    const r = await herdr(session, ["pane", "read", pane, "--source", "visible", "--lines", "60", "--raw"]);
-    return String(r.text ?? "").includes(PARK_MARK);
-  } catch { return false; }
+    const r = await herdr(session, ["pane", "process-info", "--pane", pane]);
+    return (r.process_info?.foreground_processes ?? []).map((p: any) => String(p.cmdline ?? p.name ?? "").trim());
+  } catch { return []; }
+}
+const isShell = (c: string) => /^-?(zsh|bash|fish|sh)$/.test(c);
+async function isParked(session: string, pane: string): Promise<boolean> {
+  return (await fgProcs(session, pane)).some((c) => c.startsWith(PARK_PROC));
+}
+async function atPrompt(session: string, pane: string): Promise<boolean> {
+  const fg = await fgProcs(session, pane);
+  return fg.length > 0 && fg.every(isShell);
+}
+async function waitForPrompt(session: string, pane: string, seconds: number): Promise<boolean> {
+  for (let i = 0; i < seconds * 2; i++) {
+    if (await atPrompt(session, pane)) return true;
+    await Bun.sleep(500);
+  }
+  return atPrompt(session, pane);
 }
 
 async function arm(session: string, pane: string, tab: string, sid: string, cwd: string): Promise<boolean> {
-  // Typing into a pane that is already parked would feed its read and wake it.
+  // Typing into a parked pane would feed its wait and wake it. Typing into a
+  // pane that is still shutting down loses the text. Only type at a prompt.
   if (await isParked(session, pane)) return false;
+  if (!(await waitForPrompt(session, pane, 20))) { log(`skip arm ${key(session, pane)}: pane not at a shell prompt`); return false; }
   const q = (x: string) => "'" + x.replace(/'/g, "'\\''") + "'";
   const cmd = [
     "clear",
     `printf ${q("\\n\\n   zz  sleeping: %s\\n   " + PARK_MARK + "\\n\\n")} ${q(tab)}`,
-    "read -r",
+    `${PARK_PROC} >/dev/null`,
     `cd ${q(cwd)} && claude --resume ${sid} --dangerously-skip-permissions`,
   ].join("; ");
   await herdr(session, ["pane", "send-text", pane, cmd]);
@@ -231,7 +251,7 @@ async function wakeOne(k: string, dry: boolean): Promise<boolean> {
     delete st[k]; saveState(st);
     return false;
   }
-  // The pane is normally parked in "read -r": Enter resumes in place.
+  // The pane is normally parked in "head -n1": Enter resumes in place.
   await herdr(s.session, ["pane", "send-keys", s.pane, "Enter"]);
   if (await waitForAgent(s.session, s.pane, 20)) {
     delete st[k]; saveState(st);
@@ -239,7 +259,7 @@ async function wakeOne(k: string, dry: boolean): Promise<boolean> {
     return true;
   }
   // Fallback: plain shell prompt (user hit Ctrl-C on the wait). Start it ourselves.
-  // If the pane was still parked, this line feeds "read -r" and the chat starts anyway.
+  // If the pane was still parked, this line feeds the wait and the chat starts anyway.
   await herdr(s.session, ["pane", "send-text", s.pane, `cd ${JSON.stringify(s.cwd)}`]);
   await herdr(s.session, ["pane", "send-keys", s.pane, "Enter"]);
   if (await waitForAgent(s.session, s.pane, 15)) {
