@@ -157,16 +157,29 @@ async function paneHasAgent(session: string, pane: string): Promise<boolean> {
 }
 
 /** Leave the pane shell waiting: a visible note, Enter resumes the chat in place. */
-async function arm(session: string, pane: string, tab: string, sid: string, cwd: string) {
+const PARK_MARK = "press Enter to wake this chat";
+
+async function isParked(session: string, pane: string): Promise<boolean> {
+  try {
+    const r = await herdr(session, ["pane", "read", pane, "--source", "visible", "--lines", "60", "--raw"]);
+    return String(r.text ?? "").includes(PARK_MARK);
+  } catch { return false; }
+}
+
+async function arm(session: string, pane: string, tab: string, sid: string, cwd: string): Promise<boolean> {
+  // Typing into a pane that is already parked would feed its read and wake it.
+  if (await isParked(session, pane)) return false;
   const q = (x: string) => "'" + x.replace(/'/g, "'\\''") + "'";
   const cmd = [
     "clear",
-    `printf ${q("\\n\\n   zz  sleeping: %s\\n   press Enter to wake this chat\\n\\n")} ${q(tab)}`,
+    `printf ${q("\\n\\n   zz  sleeping: %s\\n   " + PARK_MARK + "\\n\\n")} ${q(tab)}`,
     "read -r",
     `cd ${q(cwd)} && claude --resume ${sid} --dangerously-skip-permissions`,
   ].join("; ");
   await herdr(session, ["pane", "send-text", pane, cmd]);
   await herdr(session, ["pane", "send-keys", pane, "Enter"]);
+  await Bun.sleep(500);
+  return isParked(session, pane);
 }
 
 async function waitForAgent(session: string, pane: string, seconds: number): Promise<boolean> {
@@ -194,14 +207,14 @@ async function sleepOne(a: Agent, dry: boolean): Promise<boolean> {
     return false;
   }
   await Bun.sleep(300);
-  await arm(a.session, a.pane, a.tab, a.sid, a.cwd);
+  const parked = await arm(a.session, a.pane, a.tab, a.sid, a.cwd);
   const st = loadState();
   st[key(a.session, a.pane)] = {
     session: a.session, pane: a.pane, tab: a.tab, name: a.name || a.tab, sid: a.sid, cwd: a.cwd,
     sleptAt: new Date().toISOString(), idleHours: a.idleHours ?? -1,
   };
   saveState(st);
-  log(`slept ${key(a.session, a.pane)} tab=${a.tab} sid=${a.sid.slice(0, 8)} freed=${a.rssMb}MB`);
+  log(`slept ${key(a.session, a.pane)} tab=${a.tab} sid=${a.sid.slice(0, 8)} freed=${a.rssMb}MB${parked ? "" : " (NOT parked, wake with the CLI)"}`);
   return true;
 }
 
@@ -292,7 +305,7 @@ async function cmdSleep() {
     const st = loadState();
     for (const p of panes.filter((p) => !targets.some((t) => t.pane === p))) {
       const sl = st[key(session, p)];
-      if (sl && !dry) { await arm(sl.session, sl.pane, sl.tab, sl.sid, sl.cwd); log(`armed ${key(session, p)} (already asleep)`); }
+      if (sl && !dry) { const did = await arm(sl.session, sl.pane, sl.tab, sl.sid, sl.cwd); log(`${did ? "armed" : "already parked"} ${key(session, p)}`); }
       else console.error(`no claude agent on: ${key(session, p)}`);
     }
   }
