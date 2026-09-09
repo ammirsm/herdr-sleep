@@ -1,0 +1,21 @@
+[package]
+name = "herdr-sleep"
+version = "0.1.0"
+edition = "2021"
+description = "Free RAM from idle Claude Code chats in herdr panes without losing them. Sleep, park, wake by Enter."
+license = "MIT"
+repository = "https://github.com/ammirsm/herdr-sleep"
+readme = "README.md"
+keywords = ["herdr", "claude", "terminal", "memory", "cli"]
+categories = ["command-line-utilities"]
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
